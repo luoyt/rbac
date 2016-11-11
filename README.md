@@ -3,7 +3,7 @@
 
 ## RBAC 权限验证配置
 
-```
+``` php
 return [
     // RBAC 权限验证
     'user_auth_on'            => true, // 是否开启认证
