@@ -1,5 +1,7 @@
-# rbac
+# rbac 
 基于角色的数据库方式验证类
+
+只支持thinkphp5版本
 
 ## RBAC 权限验证配置
 
