@@ -1,5 +1,7 @@
 <?php
+
 namespace luoyt\rbac;
+
 /**
  * 基于角色的数据库方式验证类
  * author: luoyt
@@ -10,8 +12,10 @@ use think\Db;
 use think\Config;
 use think\Session;
 use think\Request;
+use think\Cache;
 
-Class Rbac {
+Class Rbac
+{
 
     /**
      * 认证方法
@@ -41,7 +45,7 @@ Class Rbac {
 
         // 如果使用普通权限模式，保存当前用户的访问权限列表
         if (Config::get('rbac.user_auth_type') != 2 && !Session::get(Config::get('rbac.admin_auth_key'))) {
-            Session::get('_access_list', self::getAccessList($authId));
+            Session::set('_access_list', self::getAccessList($authId));
         }
 
         return;
@@ -148,7 +152,13 @@ Class Rbac {
 
                 if (2 == Config::get('rbac.user_auth_type')) {
                     //加强验证和即时验证模式 更加安全 后台权限修改可以即时生效
-                    $accessList = self::getAccessList(Session::get(Config::get('rbac.user_auth_key')));
+                    $userId = Session::get(Config::get('rbac.user_auth_key'));
+                    // 将权限缓存5分钟
+                    $cacheKey = 'admin_user_auth_' . $userId;
+                    if (!$accessList = Cache::get($cacheKey)) {
+                        $accessList = self::getAccessList($userId);
+                        Cache::set($cacheKey, $accessList, 300);
+                    }
                 } else {
                     //登录验证模式，比较登录后保存的权限访问列表
                     $accessList = Session::get('_access_list');
@@ -213,12 +223,12 @@ Class Rbac {
         // 表前缀
         $table_prefix = Config::get('database.prefix');
         $table = [
-            'role'   => $table_prefix . Config::get('rbac.role_table'),
-            'user'   => $table_prefix . Config::get('rbac.user_table'),
+            'role' => $table_prefix . Config::get('rbac.role_table'),
+            'user' => $table_prefix . Config::get('rbac.user_table'),
             'access' => $table_prefix . Config::get('rbac.access_table'),
-            'node'   => $table_prefix . Config::get('rbac.node_table'),
+            'node' => $table_prefix . Config::get('rbac.node_table'),
         ];
-        $sql = "SELECT node.id,node.name,node.pid FROM " .
+        $sql = "SELECT distinct node.id,node.name,node.pid FROM " .
             $table['role'] . " AS role," .
             $table['user'] . " AS user," .
             $table['access'] . " AS access ," .
@@ -240,7 +250,7 @@ Class Rbac {
             ")";
         $apps = Db::query($sql);
         //转化为树
-        $tree = list_to_tree($apps);
+        $tree = self::list_to_tree($apps);
         //递归生成权限树
         $ret = self::treeToMultiArray($tree, "name", "id", "_child");
 
@@ -250,10 +260,10 @@ Class Rbac {
 
     /**
      * 将树递归成多维数组
-     * @param array $tree               树
-     * @param string $key               放入多维数组里的键名
+     * @param array $tree 树
+     * @param string $key 放入多维数组里的键名
      * @param string|array $key_default 默认值，如果是数组[VALUE]，则为当前数组子项的键名，如果是其他就是传入的值
-     * @param string $key_child         子节点键名
+     * @param string $key_child 子节点键名
      * @return array
      */
     private static function treeToMultiArray($tree, $key = "name", $key_default = "id", $key_child = "_child")
@@ -270,7 +280,7 @@ Class Rbac {
 
                 // 存在高阶节点，转为多维数组 (one.two/index 或 one/index 类型高阶节点)
                 $nodes = explode("/", strtoupper(str_replace(".", "/", $v[$key])));
-                $return = array_merge_multi($return, self::arrayOneToMulti($nodes, count($nodes), $default));
+                $return = self::array_merge_multi($return, self::arrayOneToMulti($nodes, count($nodes), $default));
             }
         }
 
@@ -297,4 +307,68 @@ Class Rbac {
         return $target;
     }
 
+    /**
+     * 节点遍历
+     *
+     * @param        $list
+     * @param string $pk
+     * @param string $pid
+     * @param string $child
+     * @param int $root
+     *
+     * @return array
+     */
+    private static function list_to_tree($list, $pk = 'id', $pid = 'pid', $child = '_child', $root = 0)
+    {
+        // 创建Tree
+        $tree = [];
+        if (is_array($list)) {
+            // 创建基于主键的数组引用
+            $refer = [];
+            foreach ($list as $key => $data) {
+                if ($data instanceof \think\Model) {
+                    $list[$key] = $data->toArray();
+                }
+                $refer[$data[$pk]] =& $list[$key];
+            }
+            foreach ($list as $key => $data) {
+                // 判断是否存在parent
+                if (!isset($list[$key][$child])) {
+                    $list[$key][$child] = [];
+                }
+                $parentId = $data[$pid];
+                if ($root == $parentId) {
+                    $tree[] =& $list[$key];
+                } else {
+                    if (isset($refer[$parentId])) {
+                        $parent =& $refer[$parentId];
+                        $parent[$child][] =& $list[$key];
+                    }
+                }
+            }
+        }
+        return $tree;
+    }
+
+    /**
+     * 多维数组合并（支持多数组）
+     * @return array
+     */
+    private static function array_merge_multi(){
+        $args = func_get_args();
+        $array = [];
+        foreach ($args as $arg) {
+            if (is_array($arg)) {
+                foreach ($arg as $k => $v) {
+                    if (is_array($v)) {
+                        $array[$k] = isset($array[$k]) ? $array[$k] : [];
+                        $array[$k] = self::array_merge_multi($array[$k], $v);
+                    } else {
+                        $array[$k] = $v;
+                    }
+                }
+            }
+        }
+        return $array;
+    }
 }
